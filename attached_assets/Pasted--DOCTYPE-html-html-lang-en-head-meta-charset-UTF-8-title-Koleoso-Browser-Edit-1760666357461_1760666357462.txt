@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Koleoso - Browser Edition</title>
+    <style>
+        body { margin: 0; background: black; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        canvas { border: 1px solid white; image-rendering: pixelated; }
+        #ui { position: absolute; top: 10px; left: 10px; color: white; font-family: Arial; }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas" width="1280" height="720"></canvas>
+    <div id="ui"></div>
+    <script>
+        // Game Setup
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const ui = document.getElementById('ui');
+        
+        // Audio Context (Web Audio API for beeps + base64 for simulated Yoruba yells)
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function playSound(freq, duration, type = 'sine', volume = 0.5) {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = type;
+            osc.frequency.value = freq;
+            gain.gain.value = volume;
+            osc.connect(gain).connect(audioCtx.destination);
+            osc.start();
+            setTimeout(() => osc.stop(), duration * 1000);
+        }
+        // Simulated Yoruba yells (short tones; replace with base64 real audio if you host files)
+        const yorubaYells = {
+            appear: () => { playSound(440, 0.5, 'sawtooth', 0.8); }, // "E han ara mi han!" - dramatic reveal
+            slash: () => { playSound(880, 0.3, 'square', 1); }, // "Koleoso!" - battle cry
+            hurt: () => { playSound(220, 0.4, 'triangle', 0.7); }, // "Ó ṣe mí!" - pain
+            victory1: () => { playSound(523, 0.5); playSound(659, 0.5); }, // Stage 1: "Mo ti ṣẹ́gun àwọn ọ̀tá!"
+            victory2: () => { playSound(659, 0.5); playSound(784, 0.5); }, // Stage 2: "Ọ̀run mi ti ṣẹ!"
+            victoryFinal: () => { playSound(784, 0.7); playSound(880, 0.7); } // Final: "Koleoso ni mo jẹ́!"
+        };
+        function playJump() { playSound(330, 0.2); }
+        function playHit() { playSound(110, 0.1, 'square'); }
+        
+        // Player
+        let player = { x: 100, y: 570, width: 50, height: 50, velY: 0, speed: 5, jumpHeight: 15, jumping: false, invisible: false, health: 100, mana: 100, maxMana: 100, slashCooldown: 0 };
+        const GRAVITY = 0.5;
+        const GROUND_Y = 620;
+        
+        // Enemies
+        class Enemy {
+            constructor(x, y, width, height, speed, hp, isBoss = false) {
+                this.x = x; this.y = y; this.width = width; this.height = height; this.speed = speed; this.hp = hp; this.isBoss = isBoss; this.direction = 1;
+            }
+            move(playerInvisible) {
+                if (!playerInvisible && Math.abs(this.x - player.x) < 300) {
+                    this.x += (player.x > this.x ? 1 : -1) * this.speed;
+                } else {
+                    this.x += this.direction * this.speed;
+                    if (this.x < 0 || this.x > 1230) this.direction *= -1;
+                }
+            }
+            draw() {
+                ctx.fillStyle = this.isBoss ? 'yellow' : 'red';
+                ctx.fillRect(this.x, this.y, this.width, this.height);
+                // Simple animation: pulse if boss
+                if (this.isBoss) ctx.globalAlpha = 0.8 + Math.sin(Date.now() / 200) * 0.2;
+            }
+        }
+        let enemies = [];
+        let currentStage = 1;
+        function loadStage(stage) {
+            enemies = [];
+            let bgColor, text;
+            if (stage === 1) {
+                bgColor = 'green'; text = 'Lagos Street - Fight the Thugs!';
+                enemies.push(new Enemy(400, 570, 50, 50, 2, 20));
+                enemies.push(new Enemy(700, 570, 50, 50, 2, 20));
+                enemies.push(new Enemy(1000, 570, 50, 50, 2, 20));
+            } else if (stage === 2) {
+                bgColor = 'blue'; text = 'Lagos Market - Defeat the Rivals!';
+                enemies.push(new Enemy(300, 570, 50, 50, 3, 30));
+                enemies.push(new Enemy(600, 570, 50, 50, 3, 30));
+                enemies.push(new Enemy(900, 570, 50, 50, 3, 30));
+                enemies.push(new Enemy(1200, 570, 50, 50, 3, 30));
+            } else {
+                bgColor = 'yellow'; text = 'Lagos Beach - Battle Jaweshoro!';
+                enemies.push(new Enemy(600, 520, 100, 100, 1, 100, true));
+            }
+            return { bgColor, text };
+        }
+        let stageInfo = loadStage(1);
+        
+        // Input
+        const keys = {};
+        window.addEventListener('keydown', e => keys[e.key] = true);
+        window.addEventListener('keyup', e => keys[e.key] = false);
+        
+        // Game Loop
+        function gameLoop() {
+            // Background
+            ctx.fillStyle = stageInfo.bgColor;
+            ctx.fillRect(0, 0, 1280, 720);
+            ctx.fillStyle = 'white';
+            ctx.fillRect(0, GROUND_Y, 1280, 100); // Ground
+            
+            // Input
+            if (keys['ArrowLeft']) player.x -= player.speed;
+            if (keys['ArrowRight']) player.x += player.speed;
+            if (keys['ArrowUp'] && !player.jumping) { player.velY = -player.jumpHeight; player.jumping = true; playJump(); }
+            if (keys[' '] && !player.slashCooldown) {
+                if (!player.invisible && player.mana > 0) {
+                    player.invisible = true;
+                } else if (player.invisible) {
+                    player.invisible = false;
+                    yorubaYells.appear();
+                    player.slashCooldown = 30; // Frames
+                    yorubaYells.slash();
+                    // Slash damage
+                    enemies.forEach((enemy, i) => {
+                        if (Math.hypot(enemy.x - player.x, enemy.y - player.y) < 100) {
+                            enemy.hp -= enemy.isBoss ? 5 : 10;
+                            playHit();
+                        }
+                        if (enemy.hp <= 0) enemies.splice(i, 1);
+                    });
+                }
+            }
+            
+            // Physics
+            player.velY += GRAVITY;
+            player.y += player.velY;
+            if (player.y >= GROUND_Y - player.height) { player.y = GROUND_Y - player.height; player.velY = 0; player.jumping = false; }
+            player.x = Math.max(0, Math.min(1230, player.x));
+            
+            // Mana
+            if (player.invisible) {
+                player.mana -= 0.5;
+                if (player.mana <= 0) player.invisible = false;
+            } else {
+                player.mana = Math.min(player.maxMana, player.mana + 0.2);
+            }
+            
+            // Draw Player (blue, semi-transparent if invisible; simple anim pulse)
+            if (!player.invisible) {
+                ctx.fillStyle = 'blue';
+                ctx.globalAlpha = 1;
+            } else {
+                ctx.globalAlpha = 0.5;
+            }
+            ctx.fillRect(player.x, player.y, player.width, player.height);
+            ctx.globalAlpha = 1;
+            if (player.slashCooldown > 0) {
+                ctx.beginPath(); ctx.arc(player.x + 25, player.y + 25, 100, 0, Math.PI * 2); ctx.strokeStyle = 'white'; ctx.stroke();
+                player.slashCooldown--;
+            }
+            // Walk anim simulation: color shift if moving
+            if (keys['ArrowLeft'] || keys['ArrowRight']) ctx.fillStyle = 'darkblue'; // "Running"
+            
+            // Enemies
+            enemies.forEach(enemy => {
+                enemy.move(player.invisible);
+                enemy.draw();
+                // Collision attack
+                if (!player.invisible && Math.hypot(enemy.x - player.x, enemy.y - player.y) < 50) {
+                    player.health -= enemy.isBoss ? 0.2 : 0.1;
+                    yorubaYells.hurt();
+                    playHit();
+                }
+            });
+            
+            // Stage Clear
+            if (enemies.length === 0) {
+                if (currentStage === 1) yorubaYells.victory1();
+                else if (currentStage === 2) yorubaYells.victory2();
+                else if (currentStage === 3) yorubaYells.victoryFinal();
+                currentStage++;
+                if (currentStage > 3) {
+                    ui.innerHTML = '<h1>Game Complete! Koleoso ni mo jẹ́!</h1>';
+                    return;
+                }
+                stageInfo = loadStage(currentStage);
+            }
+            
+            // UI
+            ui.innerHTML = `
+                Health: ${Math.floor(player.health)} | Mana: ${Math.floor(player.mana)} 
+                <div style="background: cyan; width: ${player.mana * 2}px; height: 20px;"></div>
+                ${stageInfo.text} | ${player.invisible ? 'Invisible' : 'Visible'}
+            `;
+            if (player.health <= 0) {
+                ui.innerHTML = '<h1>Game Over! Ó ṣe mí...</h1>';
+                return;
+            }
+            
+            requestAnimationFrame(gameLoop);
+        }
+        gameLoop();
+    </script>
+</body>
+</html>
